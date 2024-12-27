@@ -5,7 +5,8 @@ from fastapi.concurrency import run_in_threadpool
 
 from starlette.responses import StreamingResponse, Response
 from pydantic import BaseModel, ConfigDict
-from typing import List, Union, Generator, Iterator
+from typing import List, Union, Generator, Iterator, Optional
+from types import ModuleType
 
 
 from utils.pipelines.auth import bearer_security, get_current_user
@@ -127,12 +128,11 @@ def install_frontmatter_requirements(requirements):
 
 
 async def load_module_from_path(module_name, module_path):
-
     try:
-        # Read the module content
-        with open(module_path, "r") as file:
+        # Read the module content with UTF-8 encoding
+        with open(module_path, "r", encoding='utf-8') as file:
             content = file.read()
-
+            
         # Parse frontmatter
         frontmatter = {}
         if content.startswith('"""'):
@@ -165,7 +165,7 @@ async def load_module_from_path(module_name, module_path):
         failed_file_path = os.path.join(failed_pipelines_folder, f"{module_name}.py")
         os.rename(module_path, failed_file_path)
         print(e)
-    return None
+        return None
 
 
 async def load_modules_from_directory(directory):
