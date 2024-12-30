@@ -15,6 +15,8 @@ httpx
 
 # AI libraries
 openai
+langchain_openai
+langchain-experimental
 anthropic
 google-generativeai
 vertexai
@@ -64,3 +66,9 @@ beautifulsoup4
 # Llama Index for RAG
 llama-index
 llama-index-llms-ollama
+
+#Agent
+langgraph
+langchain-community
+langchain_experimental
+tabulate
