@@ -15,6 +15,12 @@ import matplotlib.pyplot as plt
 import io
 import base64
 from io import BytesIO
+from langchain.agents import AgentExecutor
+from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
 
 
 class Pipeline:
@@ -64,9 +70,33 @@ class Pipeline:
             )
             # DataFrame은 startup에서 초기화될 예정
             self.df = None
-            self.python_tool = PythonAstREPLTool()
+            self.python_tool = None
+            self.llm = None
+            self.client = None
             self.agent = None
-            # Azure OpenAI 클라이언트 초기화
+            self.session_store = {}
+            self.agent_with_chat_history = None
+        except Exception as e:
+            print(f"Error in initialization: {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            pass
+
+    async def on_startup(self):
+        print(f"on_startup:{__name__}")
+        try:
+            
+            if os.path.exists(self.valves.TARGET_DATA_SOURCE):
+                # CSV 파일을 DataFrame으로 읽기
+                self.df = pd.read_csv(self.valves.TARGET_DATA_SOURCE)
+                print(f"Successfully loaded DataFrame with shape: {self.df.shape}")
+            else:
+                print(f"Warning: {self.valves.TARGET_DATA_SOURCE} file not found")
+                self.df = pd.DataFrame()  # 빈 DataFrame 생성
+
+            self.python_tool = PythonAstREPLTool()
+            self.python_tool.locals["df"] = self.df
+
             self.client = AzureChatOpenAI(
                 openai_api_key=self.valves.AZURE_OPENAI_API_KEY,
                 openai_api_version=self.valves.AZURE_OPENAI_API_VERSION,
@@ -74,38 +104,8 @@ class Pipeline:
                 azure_deployment=self.valves.AZURE_OPENAI_DEPLOYMENT_NAME,
                 temperature=0
             )
-        except Exception as e:
-            print(f"Error in initialization: {str(e)}")
-            import traceback
-            print(f"Traceback: {traceback.format_exc()}")
-            # 기본값으로 초기화
-            self.name = "Data Analysis Agent"
-            self.valves = self.Valves(
-                **{
-                    "AZURE_OPENAI_API_KEY": os.getenv("AZURE_OPENAI_API_KEY", "your-azure-openai-api-key-here"),
-                    "AZURE_OPENAI_ENDPOINT": os.getenv("AZURE_OPENAI_ENDPOINT", "your-azure-openai-endpoint-here"),
-                    "AZURE_OPENAI_DEPLOYMENT_NAME": os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "your-deployment-name-here"),
-                    "AZURE_OPENAI_API_VERSION": os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
-                    "TARGET_DATA_SOURCE": ""
-                }
-            )
-            self.df = None
-            self.python_tool = PythonAstREPLTool()
-            self.agent = None
 
-    async def on_startup(self):
-        print(f"on_startup:{__name__}")
-        try:
-            if os.path.exists(self.valves.TARGET_DATA_SOURCE):
-                # CSV 파일을 DataFrame으로 읽기
-                self.df = pd.read_csv(self.valves.TARGET_DATA_SOURCE)
-                self.python_tool.locals["df"] = self.df
-                print(f"Successfully loaded DataFrame with shape: {self.df.shape}")
-            else:
-                print(f"Warning: {self.valves.TARGET_DATA_SOURCE} file not found")
-                self.df = pd.DataFrame()  # 빈 DataFrame 생성
-            
-            llm = AzureChatOpenAI(
+            self.llm = AzureChatOpenAI(
                 openai_api_key=self.valves.AZURE_OPENAI_API_KEY,
                 openai_api_version=self.valves.AZURE_OPENAI_API_VERSION,
                 azure_endpoint=self.valves.AZURE_OPENAI_ENDPOINT,
@@ -114,11 +114,32 @@ class Pipeline:
                 streaming=True
             )
 
+            # prompt = ChatPromptTemplate.from_messages([
+            #     ("system", """You are a professional data analyst and expert in Pandas. 
+            #     You must use Pandas DataFrame(`df`) to answer user's request.
+
+            #     [IMPORTANT] DO NOT create or overwrite the `df` variable in your code.
+
+            #     If you are willing to generate visualization code, please use `plt.show()` at the end of your code.
+            #     I prefer seaborn code for visualization, but you can use matplotlib as well.
+
+            #     <Visualization Preference>
+            #     - `muted` cmap, white background, and no grid for your visualization.
+            #     Recommend to set palette parameter for seaborn plot.
+
+            #     Make sure to use the `pdf_search` tool for searching information from the PDF document.
+            #     If you can't find the information from the PDF document, use the `search` tool for searching information from the web."""),
+            #     MessagesPlaceholder(variable_name="chat_history", optional=True),
+            #     ("human", "{input}"),
+            #     MessagesPlaceholder(variable_name="agent_scratchpad")
+            # ])
+            
+            
             self.agent = create_pandas_dataframe_agent(
-                llm=llm,
+                llm=self.llm,
                 df=self.df,
                 verbose=True,
-                agent_type="openai-tools",
+                agent_type="tool-calling",
                 max_iterations=5,
                 return_intermediate_steps=True,
                 allow_dangerous_code=True,
@@ -132,12 +153,19 @@ class Pipeline:
                 "\nRecomment to set palette parameter for seaborn plot.",
             )
 
+            self.agent_with_chat_history = RunnableWithMessageHistory(
+                self.agent,
+                # 대화 session_id
+                self.get_session_history,
+                # 프롬프트의 질문이 입력되는 key: "input"
+                input_messages_key="input",
+                # 프롬프트의 메시지가 입력되는 key: "chat_history"
+                history_messages_key="chat_history",
+)
         except Exception as e:
             print(f"Error in agent initialization: {str(e)}")
             import traceback
             print(f"Traceback: {traceback.format_exc()}")
-            self.df = pd.DataFrame()  # 에러 발생 시 빈 DataFrame 생성
-            self.agent = None
 
     async def on_shutdown(self):
         print(f"on_shutdown:{__name__}")
@@ -145,14 +173,22 @@ class Pipeline:
         if hasattr(self, 'df'):
             del self.df
 
+    def get_session_history(self, session_id):
+        """세션 ID에 해당하는 대화 기록을 반환합니다. 없으면 새로 생성합니다."""
+        if session_id not in self.session_store:
+            self.session_store[session_id] = ChatMessageHistory()
+        return self.session_store[session_id]
+
     def pipe(
             self, user_message: str, model_id: str, messages: List[dict], body: dict
     ) -> Union[str, Generator, Iterator]:
-        print(f"pipe:{__name__}")
-        print(f"Input messages: {json.dumps(messages, indent=2)}")
-        print(f"User message: {user_message}")
-        print(f"Body: {json.dumps(body, indent=2)}")
-
+        print(f"### pipe:{__name__}")
+        print(f"### model_id: {model_id}")
+        print(f"### messages: {json.dumps(messages, indent=2)}")
+        print(f"### User message: {user_message}")
+        print(f"### Body: {json.dumps(body, indent=2)}")
+        session_id = model_id + "_" + body.get("user",{}).get("id")
+        print(f"### session_id: {session_id}")
         try:
             # DataFrame 상태 확인
             if self.df is None or self.agent is None:
@@ -218,7 +254,13 @@ class Pipeline:
                     try:
                         import traceback  # traceback 모듈을 함수 내부로 이동
                         
-                        for step in self.agent.stream(last_user_message):
+                        chat_history = self.get_session_history(session_id)
+                        for step in self.agent_with_chat_history.stream(
+                            {"input": last_user_message,
+                             "chat_history": chat_history},
+                            config={"configurable": {"session_id": session_id}},
+                        ):
+                            print(f"### self.session_store: {chat_history.messages}")
                             print(f"Step type: {type(step)}")
                             if isinstance(step, dict):
                                 try:
@@ -300,7 +342,8 @@ class Pipeline:
                                                         
                                                         # 이미지를 버퍼에 저장
                                                         buffer = BytesIO()
-                                                        plt.savefig(buffer, format='png', dpi=300, bbox_inches='tight')
+                                                        plt.gcf().set_size_inches(8, 6)  # 그래프 크기를 8x6 인치로 설정
+                                                        plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
                                                         buffer.seek(0)
                                                         image_base64 = base64.b64encode(buffer.getvalue()).decode()
 
@@ -386,7 +429,12 @@ class Pipeline:
                 return stream_generator()
             else:
                 # 비스트리밍 모드
-                response = self.agent.invoke(last_user_message)
+                chat_history = self.get_session_history(session_id)
+                response = self.agent.invoke(
+                    {"input": last_user_message,
+                     "chat_history": chat_history},
+                    config={"configurable": {"session_id": session_id}},
+                )
                 content = None
                 if isinstance(response, dict):
                     if "output" in response:
