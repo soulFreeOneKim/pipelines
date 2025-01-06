@@ -1,5 +1,5 @@
 from langchain_core.messages import AIMessageChunk
-from typing import Any, Dict, List, Callable
+from typing import Any, Dict, List, Callable, Optional
 from dataclasses import dataclass
 from langchain_core.agents import AgentAction, AgentFinish, AgentStep
 from langchain.agents.output_parsers.tools import ToolAgentAction
@@ -7,6 +7,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 import uuid
+from enum import Enum
 
 
 def random_uuid():
@@ -450,3 +451,19 @@ def invoke_graph(
                         for item in node_chunk:
                             print(item)
                 print("=" * 50)
+
+
+class AgentStepType(Enum):
+    THINKING = "thinking"
+    TOOL_START = "tool_start"
+    TOOL_END = "tool_end"
+    OBSERVATION = "observation"
+    FINAL_ANSWER = "final_answer"
+    ERROR = "error"
+
+
+@dataclass
+class AgentStepMessage:
+    step_type: AgentStepType
+    content: str
+    details: Optional[Any] = None

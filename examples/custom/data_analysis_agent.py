@@ -252,178 +252,100 @@ class Pipeline:
             if body.get("stream", False):
                 def stream_generator():
                     try:
-                        import traceback  # traceback 모듈을 함수 내부로 이동
-                        
                         chat_history = self.get_session_history(session_id)
+                        
+                        # 시작 메시지
+                        start_message = {
+                            'choices': [{
+                                'delta': {
+                                    'role': 'assistant',
+                                    'content': '🤔 분석을 시작합니다...\n\n'
+                                },
+                                'index': 0
+                            }]
+                        }
+                        yield f"data: {json.dumps(start_message)}\n\n"
+                        
                         for step in self.agent_with_chat_history.stream(
-                            {"input": last_user_message,
-                             "chat_history": chat_history},
+                            {"input": last_user_message, "chat_history": chat_history},
                             config={"configurable": {"session_id": session_id}},
                         ):
-                            print(f"### self.session_store: {chat_history.messages}")
-                            print(f"Step type: {type(step)}")
                             if isinstance(step, dict):
-                                try:
-                                    print(f"Step contents: {json.dumps({k: str(v) for k, v in step.items()}, indent=2)}")
-                                except:
-                                    print("Could not serialize step contents")
-                                
-                                # Python 코드와 실행 결과 처리
+                                # 중간 단계 처리
                                 if "intermediate_steps" in step:
-                                    try:
-                                        steps_info = []
-                                        for s in step["intermediate_steps"]:
-                                            if hasattr(s, "__dict__"):
-                                                steps_info.append(str(s.__dict__))
-                                            else:
-                                                steps_info.append(str(s))
-                                        print(f"Found intermediate_steps: {steps_info}")
-                                    except Exception as e:
-                                        print(f"Error processing intermediate steps: {str(e)}")
-
                                     for intermediate_step in step["intermediate_steps"]:
-                                        # ToolAgentAction 객체 처리
-                                        action = None
-                                        observation = None
+                                        # 도구 실행 시작
+                                        tool_message = {
+                                            'choices': [{
+                                                'delta': {
+                                                    'role': 'assistant',
+                                                    'content': '🔧 도구를 실행합니다...\n'
+                                                },
+                                                'index': 0
+                                            }]
+                                        }
+                                        yield f"data: {json.dumps(tool_message)}\n\n"
                                         
-                                        if hasattr(intermediate_step, "tool"):
-                                            # ToolAgentAction 객체인 경우
-                                            action = {
-                                                "tool": intermediate_step.tool,
-                                                "tool_input": intermediate_step.tool_input
-                                            }
-                                            observation = intermediate_step.observation
-                                        elif isinstance(intermediate_step, tuple) and len(intermediate_step) == 2:
-                                            # 튜플인 경우
-                                            action, observation = intermediate_step
-                                            if hasattr(action, "tool"):
-                                                action = {
-                                                    "tool": action.tool,
-                                                    "tool_input": action.tool_input
+                                        action, observation = self._process_intermediate_step(intermediate_step)
+                                        
+                                        if action and isinstance(action, dict):
+                                            # 코드 실행 메시지
+                                            if action.get("tool") == "python_repl_ast":
+                                                code = action.get("tool_input", {}).get("query", "")
+                                                code_message = {
+                                                    'choices': [{
+                                                        'delta': {
+                                                            'role': 'assistant',
+                                                            'content': f'```python\n{code}\n```\n'
+                                                        },
+                                                        'index': 0
+                                                    }]
                                                 }
-                                        
-                                        print(f"Action type: {type(action)}")
-                                        print(f"Action content: {action}")
-                                        
-                                        if action and isinstance(action, dict) and action.get("tool") == "python_repl_ast":
-                                            code = action.get("tool_input", {}).get("query", "")
-                                            print(f"Found Python code to execute: {code}")
-                                            
-                                            if code:
-                                                # 시각화 코드 감지를 위한 키워드 목록
-                                                viz_keywords = [
-                                                    "plt.show()",
-                                                    "sns.barplot",
-                                                    "plt.figure",
-                                                    "sns.set",
-                                                    "matplotlib",
-                                                    "seaborn"
-                                                ]
+                                                yield f"data: {json.dumps(code_message)}\n\n"
                                                 
-                                                # 시각화 코드 감지
-                                                is_viz_code = any(keyword in code for keyword in viz_keywords)
-                                                print(f"Is visualization code: {is_viz_code}")
-                                                print(f"Detected keywords: {[kw for kw in viz_keywords if kw in code]}")
-                                                
-                                                if is_viz_code:
-                                                    try:
-                                                        print("Executing visualization code...")
-                                                        
-                                                        # matplotlib 설정
-                                                        matplotlib.use('Agg')
-                                                        plt.style.use('default')
-                                                        plt.close('all')
-                                                        
-                                                        # 로컬 네임스페이스에서 코드 실행
-                                                        local_vars = {'df': self.df}
-                                                        local_vars.update(globals())
-                                                        local_vars.update(locals())
-                                                        exec(code, local_vars, local_vars)
-                                                        
-                                                        # 이미지를 버퍼에 저장
-                                                        buffer = BytesIO()
-                                                        plt.gcf().set_size_inches(8, 6)  # 그래프 크기를 8x6 인치로 설정
-                                                        plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
-                                                        buffer.seek(0)
-                                                        image_base64 = base64.b64encode(buffer.getvalue()).decode()
-
-                                                        image_base64 = f"data:image/png;base64,{image_base64}"
-
-
-                                                        # 정리
-                                                        buffer.close()
-                                                        plt.close('all')
-                                                        
-
-                                                        yield f"![plot]({image_base64})\n\n"
-                                                        
-                                                    except Exception as viz_error:
-                                                        import traceback
-                                                        print(f"Visualization error: {str(viz_error)}")
-                                                        print(f"Traceback: {traceback.format_exc()}")
-                                                        error_response = {
-                                                            "choices": [{
-                                                                "delta": {
-                                                                    "role": "assistant",
-                                                                    "content": f"\nError generating visualization: {str(viz_error)}\n"
-                                                                },
-                                                                "index": 0,
-                                                                "finish_reason": None
-                                                            }]
-                                                        }
-                                                        yield f"data: {json.dumps(error_response)}\n\n"
-                                                else:
-                                                    # 일반 코드 실행
-                                                    try:
-                                                        # 로컬 네임스페이스에서 코드 실행
-                                                        local_vars = {'df': self.df}
-                                                        local_vars.update(globals())
-                                                        local_vars.update(locals())
-                                                        exec(code, local_vars, local_vars)
-                                                        
-                                                        # survival_rate_by_gender가 생성되었다면 전역 변수로 저장
-                                                        if 'survival_rate_by_gender' in local_vars:
-                                                            globals()['survival_rate_by_gender'] = local_vars['survival_rate_by_gender']
-                                                        
-                                                        yield f"data: {json.dumps({'choices': [{'delta': {'role': 'assistant', 'content': str(observation)}, 'index': 0}]})}\n\n"
-                                                    except Exception as exec_error:
-                                                        import traceback
-                                                        print(f"Code execution error: {str(exec_error)}")
-                                                        print(f"Traceback: {traceback.format_exc()}")
-                                                        error_response = {
-                                                            "choices": [{
-                                                                "delta": {
-                                                                    "role": "assistant",
-                                                                    "content": f"\nError executing code: {str(exec_error)}\n"
-                                                                },
-                                                                "index": 0,
-                                                                "finish_reason": None
-                                                            }]
-                                                        }
-                                                        yield f"data: {json.dumps(error_response)}\n\n"
+                                                # 실행 결과 처리
+                                                result = self._execute_code(code, is_visualization=self._is_visualization_code(code))
+                                                result_message = {
+                                                    'choices': [{
+                                                        'delta': {
+                                                            'role': 'assistant',
+                                                            'content': f'실행 결과:\n{result}\n\n'
+                                                        },
+                                                        'index': 0
+                                                    }]
+                                                }
+                                                yield f"data: {json.dumps(result_message)}\n\n"
                                 
                                 # 최종 응답 처리
                                 if "output" in step:
-                                    output = str(step["output"]).strip()
-                                    if output:
-                                        # 마크다운 이미지 참조 제거
-                                        output = output.replace("![", "").replace("](attachment://survival_rate_plot.png)", "")
-                                        
-                                        # 응답 전송
-                                        yield f"data: {json.dumps({'choices': [{'delta': {'role': 'assistant', 'content': output}, 'index': 0}]})}\n\n"
-                            
-                            else:
-                                # 기타 스텝 처리
-                                yield f"data: {json.dumps({'choices': [{'delta': {'role': 'assistant', 'content': str(step)}, 'index': 0}]})}\n\n"
+                                    output_content = f'📊 분석 결과:\n{step["output"]}\n'
+                                    output_message = {
+                                        'choices': [{
+                                            'delta': {
+                                                'role': 'assistant',
+                                                'content': output_content
+                                            },
+                                            'index': 0
+                                        }]
+                                    }
+                                    yield f"data: {json.dumps(output_message)}\n\n"
                         
-                        # 스트림 종료
+                        # 종료 메시지
+                        complete_message = {
+                            'choices': [{
+                                'delta': {
+                                    'role': 'assistant',
+                                    'content': '\n✅ 분석이 완료되었습니다.'
+                                },
+                                'index': 0
+                            }]
+                        }
+                        yield f"data: {json.dumps(complete_message)}\n\n"
                         yield "data: [DONE]\n\n"
                                 
                     except Exception as e:
-                        import traceback
-                        print(f"Error in stream_generator: {str(e)}")
-                        print(f"Traceback: {traceback.format_exc()}")
-                        yield f"data: {json.dumps({'choices': [{'delta': {'role': 'assistant', 'content': f'Error: {str(e)}'}, 'index': 0}]})}\n\n"
+                        error_msg = f"❌ 오류가 발생했습니다: {str(e)}"
+                        yield f"data: {json.dumps({'choices': [{'delta': {'role': 'assistant', 'content': error_msg}, 'index': 0}]})}\n\n"
                         yield "data: [DONE]\n\n"
                 
                 return stream_generator()
@@ -478,3 +400,114 @@ class Pipeline:
             import traceback
             print(f"Traceback: {traceback.format_exc()}")
             return f"Error: {str(e)}\n{traceback.format_exc()}" 
+
+    def _process_intermediate_step(self, intermediate_step):
+        """중간 단계 처리를 위한 헬퍼 메서드"""
+        action = None
+        observation = None
+        
+        if hasattr(intermediate_step, "tool"):
+            action = {
+                "tool": intermediate_step.tool,
+                "tool_input": intermediate_step.tool_input
+            }
+            observation = intermediate_step.observation
+        elif isinstance(intermediate_step, tuple) and len(intermediate_step) == 2:
+            action, observation = intermediate_step
+            if hasattr(action, "tool"):
+                action = {
+                    "tool": action.tool,
+                    "tool_input": action.tool_input
+                }
+        
+        return action, observation
+
+    def _is_visualization_code(self, code: str) -> bool:
+        """시각화 코드 여부 확인"""
+        viz_keywords = [
+            "plt.show()",
+            "sns.barplot",
+            "plt.figure",
+            "sns.set",
+            "matplotlib",
+            "seaborn"
+        ]
+        return any(keyword in code for keyword in viz_keywords)
+
+    def _execute_code(self, code: str, is_visualization: bool = False):
+        """코드 실행 및 결과 반환"""
+        try:
+            if is_visualization:
+                return self._execute_visualization_code(code)
+            else:
+                return self._execute_regular_code(code)
+        except Exception as e:
+            return f"실행 오류: {str(e)}" 
+
+    def _execute_visualization_code(self, code: str) -> str:
+        """시각화 코드 실행 및 이미지 생성"""
+        try:
+            # matplotlib 설정
+            matplotlib.use('Agg')
+            plt.style.use('default')
+            plt.close('all')
+            
+            # 로컬 네임스페이스에서 코드 실행
+            local_vars = {'df': self.df}
+            local_vars.update(globals())
+            local_vars.update(locals())
+            exec(code, local_vars, local_vars)
+            
+            # 이미지를 버퍼에 저장
+            buffer = BytesIO()
+            plt.gcf().set_size_inches(8, 6)  # 그래프 크기를 8x6 인치로 설정
+            plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
+            buffer.seek(0)
+            image_base64 = base64.b64encode(buffer.getvalue()).decode()
+            
+            # 정리
+            buffer.close()
+            plt.close('all')
+            
+            return f"![plot](data:image/png;base64,{image_base64})"
+            
+        except Exception as e:
+            return f"시각화 오류: {str(e)}"
+
+    def _execute_regular_code(self, code: str) -> str:
+        """일반 Python 코드 실행"""
+        try:
+            # 로컬 네임스페이스에서 코드 실행
+            local_vars = {'df': self.df}
+            local_vars.update(globals())
+            local_vars.update(locals())
+            
+            # StringIO를 사용하여 출력 캡처
+            from io import StringIO
+            import sys
+            
+            output_buffer = StringIO()
+            stdout_backup = sys.stdout
+            sys.stdout = output_buffer
+            
+            try:
+                exec(code, local_vars, local_vars)
+                output = output_buffer.getvalue()
+            finally:
+                sys.stdout = stdout_backup
+                output_buffer.close()
+            
+            # 실행 결과가 있는 경우 반환
+            if output.strip():
+                return output.strip()
+            
+            # 실행 결과가 없는 경우, 마지막 실행된 표현식의 결과 반환
+            last_expression = code.strip().split('\n')[-1]
+            try:
+                result = eval(last_expression, local_vars, local_vars)
+                return str(result)
+            except:
+                return "코드가 성공적으로 실행되었습니다."
+                
+        except Exception as e:
+            return f"실행 오류: {str(e)}" 
