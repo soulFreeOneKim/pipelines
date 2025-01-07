@@ -48,46 +48,66 @@ class Pipeline:
         }
 
     def __init__(self):
+        self.name = "Data Analysis Agent"
+        self.df = None
+        self.python_tool = None
+        self.llm = None
+        self.client = None
+        self.agent = None
+        self.session_store = {}
+        self.agent_with_chat_history = None
+
         try:
-            # 현재 파일의 절대 경로를 기준으로 data 폴더 경로 설정
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.dirname(os.path.dirname(current_dir))
-            csv_path = os.path.join(project_root, 'pipelines', 'data', 'titanic.csv')
+            # pipelines/data 디렉토리 경로 설정
+            current_dir = os.path.dirname(os.path.abspath(__file__))  # pipelines/pipelines/
+            pipelines_root = os.path.dirname(current_dir)  # pipelines/
+            self.data_dir = os.path.join(pipelines_root, 'data')  # pipelines/data/
+            os.makedirs(self.data_dir, exist_ok=True)
+            print(f"Data directory path: {self.data_dir}")
+
+            # 기본 valves 설정 - 기본 CSV 파일 경로 지정
+            self.valves = self.Valves(
+                AZURE_OPENAI_API_KEY=os.getenv("AZURE_OPENAI_API_KEY", "your-azure-openai-api-key-here"),
+                AZURE_OPENAI_ENDPOINT=os.getenv("AZURE_OPENAI_ENDPOINT", "your-azure-openai-endpoint-here"),
+                AZURE_OPENAI_DEPLOYMENT_NAME=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "your-deployment-name-here"),
+                AZURE_OPENAI_API_VERSION=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview"),
+                TARGET_DATA_SOURCE=os.path.join(self.data_dir, 'titanic.csv')  # 기본 파일 경로 지정
+            )
+        except Exception as e:
+            print(f"Error in __init__: {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+
+    async def on_startup(self):
+        print(f"on_startup:{__name__}")
+        try:
+            # data 디렉토리에서 가장 최근의 CSV 파일 찾기
+            csv_files = [f for f in os.listdir(self.data_dir) if f.endswith('.csv')]
+            if not csv_files:
+                csv_path = os.path.join(self.data_dir, 'titanic.csv')  # 기본 파일
+                print(f"No CSV files found in {self.data_dir}, using default: {csv_path}")
+            else:
+                # 가장 최근에 수정된 CSV 파일 선택
+                latest_csv = max(csv_files, key=lambda f: os.path.getmtime(os.path.join(self.data_dir, f)))
+                csv_path = os.path.join(self.data_dir, latest_csv)
+                print(f"Found latest CSV file: {csv_path}")
             
             # 경로 정규화
             csv_path = os.path.normpath(csv_path)
             print(f"Loading data from: {csv_path}")
             
-            self.name = "Data Analysis Agent"
+            # valves 업데이트 - 구체적인 CSV 파일 지정
             self.valves = self.Valves(
-                **{
-                    "AZURE_OPENAI_API_KEY": os.getenv("AZURE_OPENAI_API_KEY", "your-azure-openai-api-key-here"),
-                    "AZURE_OPENAI_ENDPOINT": os.getenv("AZURE_OPENAI_ENDPOINT", "your-azure-openai-endpoint-here"),
-                    "AZURE_OPENAI_DEPLOYMENT_NAME": os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "your-deployment-name-here"),
-                    "AZURE_OPENAI_API_VERSION": os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
-                    "TARGET_DATA_SOURCE": csv_path
-                }
+                AZURE_OPENAI_API_KEY=os.getenv("AZURE_OPENAI_API_KEY", "your-azure-openai-api-key-here"),
+                AZURE_OPENAI_ENDPOINT=os.getenv("AZURE_OPENAI_ENDPOINT", "your-azure-openai-endpoint-here"),
+                AZURE_OPENAI_DEPLOYMENT_NAME=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "your-deployment-name-here"),
+                AZURE_OPENAI_API_VERSION=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview"),
+                TARGET_DATA_SOURCE=csv_path  # startup 시점에 구체적인 CSV 파일 지정
             )
-            # DataFrame은 startup에서 초기화될 예정
-            self.df = None
-            self.python_tool = None
-            self.llm = None
-            self.client = None
-            self.agent = None
-            self.session_store = {}
-            self.agent_with_chat_history = None
-        except Exception as e:
-            print(f"Error in initialization: {str(e)}")
-            import traceback
-            print(f"Traceback: {traceback.format_exc()}")
-            pass
+            print("Valves updated with new CSV path")
 
-    async def on_startup(self):
-        print(f"on_startup:{__name__}")
-        try:
-            
+            # CSV 파일을 DataFrame으로 읽기
             if os.path.exists(self.valves.TARGET_DATA_SOURCE):
-                # CSV 파일을 DataFrame으로 읽기
                 self.df = pd.read_csv(self.valves.TARGET_DATA_SOURCE)
                 print(f"Successfully loaded DataFrame with shape: {self.df.shape}")
             else:
@@ -169,9 +189,21 @@ class Pipeline:
 
     async def on_shutdown(self):
         print(f"on_shutdown:{__name__}")
-        # DataFrame 정리
+        # 모든 리소스 정리
         if hasattr(self, 'df'):
             del self.df
+        if hasattr(self, 'python_tool'):
+            del self.python_tool
+        if hasattr(self, 'llm'):
+            del self.llm
+        if hasattr(self, 'client'):
+            del self.client
+        if hasattr(self, 'agent'):
+            del self.agent
+        if hasattr(self, 'agent_with_chat_history'):
+            del self.agent_with_chat_history
+        self.session_store.clear()
+        print("All resources cleaned up")
 
     def get_session_history(self, session_id):
         """세션 ID에 해당하는 대화 기록을 반환합니다. 없으면 새로 생성합니다."""
@@ -189,14 +221,23 @@ class Pipeline:
         print(f"### Body: {json.dumps(body, indent=2)}")
         session_id = model_id + "_" + body.get("user",{}).get("id")
         print(f"### session_id: {session_id}")
+
         try:
-            # DataFrame 상태 확인
+            # DataFrame이나 Agent가 초기화되지 않은 경우
             if self.df is None or self.agent is None:
                 print("Warning: DataFrame or Agent is not initialized")
-                self.on_startup()  # DataFrame과 Agent 초기화 시도
-
-            if self.agent is None:
-                raise Exception("Failed to initialize agent")
+                error_msg = ("시스템이 초기화되지 않았습니다. "
+                           "관리자에게 문의하거나 잠시 후 다시 시도해주세요.")
+                return {
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": error_msg
+                        },
+                        "index": 0,
+                        "finish_reason": "stop"
+                    }]
+                }
 
             # matplotlib 설정
             matplotlib.use('Agg')
