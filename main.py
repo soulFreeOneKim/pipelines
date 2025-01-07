@@ -781,3 +781,69 @@ async def generate_openai_chat_completion(form_data: OpenAIChatCompletionForm):
                 }
 
     return await run_in_threadpool(job)
+
+
+@app.post("/upload-csv")
+async def upload_csv(file: UploadFile = File(...)):
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="CSV 파일만 업로드 가능합니다.")
+
+    try:
+        # 파일 저장 경로 설정
+        upload_dir = os.path.join(os.path.dirname(__file__), "data")
+        os.makedirs(upload_dir, exist_ok=True)
+        file_path = os.path.join(upload_dir, file.filename)
+
+        # 파일 저장
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # data_analysis_agent 재구동
+        agent_module = "data_analysis_agent"
+        if agent_module in PIPELINE_MODULES:
+            # 기존 인스턴스 종료
+            if hasattr(PIPELINE_MODULES[agent_module], "on_shutdown"):
+                await PIPELINE_MODULES[agent_module].on_shutdown()
+            
+            # 모듈 리로드
+            import importlib
+            module = importlib.import_module(f"pipelines.{agent_module}")
+            importlib.reload(module)
+            
+            # 새 인스턴스 생성 및 시작
+            PIPELINE_MODULES[agent_module] = module.Pipeline()
+            if hasattr(PIPELINE_MODULES[agent_module], "on_startup"):
+                await PIPELINE_MODULES[agent_module].on_startup()
+
+        return {"message": "파일이 성공적으로 업로드되었고 에이전트가 재시작되었습니다.", "file_path": file_path}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"파일 업로드 중 오류가 발생했습니다: {str(e)}")
+
+
+@app.post("/restart-agent")
+async def restart_agent():
+    try:
+        # data_analysis_agent.py 재구동 로직
+        agent_module = "data_analysis_agent"
+        if agent_module in PIPELINE_MODULES:
+            # 기존 인스턴스 종료
+            if hasattr(PIPELINE_MODULES[agent_module], "on_shutdown"):
+                await PIPELINE_MODULES[agent_module].on_shutdown()
+            
+            # 모듈 리로드
+            import importlib
+            module = importlib.import_module(f"pipelines.{agent_module}")
+            importlib.reload(module)
+            
+            # 새 인스턴스 생성 및 시작
+            PIPELINE_MODULES[agent_module] = module.Pipeline()
+            if hasattr(PIPELINE_MODULES[agent_module], "on_startup"):
+                await PIPELINE_MODULES[agent_module].on_startup()
+            
+            return {"status": "success", "message": "Agent restarted successfully"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to restart agent: {str(e)}"
+        )
