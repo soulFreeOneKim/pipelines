@@ -300,7 +300,7 @@ class Pipeline:
                             'choices': [{
                                 'delta': {
                                     'role': 'assistant',
-                                    'content': '🤔 분석을 시작합니다...\n\n'
+                                    'content': '🤔 분석을 시작합니다.\n\n'
                                 },
                                 'index': 0
                             }]
@@ -320,7 +320,7 @@ class Pipeline:
                                             'choices': [{
                                                 'delta': {
                                                     'role': 'assistant',
-                                                    'content': '🔧 도구를 실행합니다...\n'
+                                                    'content': '🔧 도구를 실행합니다.\n'
                                                 },
                                                 'index': 0
                                             }]
@@ -350,7 +350,7 @@ class Pipeline:
                                                     'choices': [{
                                                         'delta': {
                                                             'role': 'assistant',
-                                                            'content': f'실행 결과:\n{result}\n\n'
+                                                            'content': f'실행 결과\n{result}\n\n'
                                                         },
                                                         'index': 0
                                                     }]
@@ -359,7 +359,7 @@ class Pipeline:
                                 
                                 # 최종 응답 처리
                                 if "output" in step:
-                                    output_content = f'📊 분석 결과:\n{step["output"]}\n'
+                                    output_content = f'📊 분석 결과\n{step["output"]}\n'
                                     output_message = {
                                         'choices': [{
                                             'delta': {
@@ -412,7 +412,7 @@ class Pipeline:
                                     tool_input = action.get("tool_input", {})
                                     contents.append(f"```python\n{tool_input.get('query', '')}\n```")
                                     if observation:
-                                        contents.append(f"실행 결과:\n{observation}")
+                                        contents.append(f"실행 결과\n{observation}")
                         content = "\n".join(contents)
                 else:
                     content = str(response)
